@@ -38,7 +38,10 @@ declare global {
   }
 }
 
-interface VideoGenerationResult {
+type GenerationMode = 'video' | 'image';
+
+interface GenerationResult {
+  type: GenerationMode;
   url: string;
   prompt: string;
   timestamp: number;
@@ -46,6 +49,7 @@ interface VideoGenerationResult {
 
 // --- Constants ---
 const VEO_MODEL = 'veo-3.1-fast-generate-preview';
+const IMAGE_MODEL = 'gemini-2.5-flash-image';
 
 // --- Helper Functions ---
 const fileToBase64 = (file: File): Promise<string> => {
@@ -66,15 +70,16 @@ export default function App() {
   const [hasKey, setHasKey] = useState<boolean | null>(null);
   const [customApiKey, setCustomApiKey] = useState<string>('');
   const [showSettings, setShowSettings] = useState(false);
+  const [mode, setMode] = useState<GenerationMode>('video');
   
   const [prompt, setPrompt] = useState('');
   const [image, setImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
-  const [generatedVideo, setGeneratedVideo] = useState<VideoGenerationResult | null>(null);
+  const [currentResult, setCurrentResult] = useState<GenerationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [history, setHistory] = useState<VideoGenerationResult[]>([]);
+  const [history, setHistory] = useState<GenerationResult[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -187,6 +192,81 @@ export default function App() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  const generate = async () => {
+    if (mode === 'video') {
+      await generateVideo();
+    } else {
+      await generateImage();
+    }
+  };
+
+  const generateImage = async () => {
+    if (!prompt.trim() && !image) {
+      setError("Please provide a prompt or an image to edit.");
+      return;
+    }
+
+    setIsGenerating(true);
+    setError(null);
+    setStatusMessage("Generating image...");
+
+    try {
+      const activeKey = customApiKey || process.env.GEMINI_API_KEY;
+      if (!activeKey) throw new Error("No API Key found. Please set one in settings.");
+
+      const ai = new GoogleGenAI({ apiKey: activeKey });
+      
+      let contents: any = { parts: [] };
+      
+      if (image) {
+        const base64Image = await fileToBase64(image);
+        contents.parts.push({
+          inlineData: {
+            data: base64Image,
+            mimeType: image.type,
+          }
+        });
+      }
+      
+      contents.parts.push({ text: prompt || "Generate a beautiful image" });
+
+      const response = await ai.models.generateContent({
+        model: IMAGE_MODEL,
+        contents,
+        config: {
+          imageConfig: {
+            aspectRatio: "16:9",
+          }
+        }
+      });
+
+      let imageUrl = '';
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+          imageUrl = `data:image/png;base64,${part.inlineData.data}`;
+          break;
+        }
+      }
+
+      if (!imageUrl) throw new Error("No image data returned from API.");
+
+      const result: GenerationResult = {
+        type: 'image',
+        url: imageUrl,
+        prompt: prompt || "Image Generation",
+        timestamp: Date.now()
+      };
+
+      setCurrentResult(result);
+      setHistory(prev => [result, ...prev]);
+      setIsGenerating(false);
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || "An error occurred during image generation.");
+      setIsGenerating(false);
+    }
+  };
+
   const generateVideo = async () => {
     if (!prompt.trim() && !image) {
       setError("Please provide a prompt or an image.");
@@ -274,13 +354,14 @@ export default function App() {
       const blob = await videoResponse.blob();
       const videoUrl = URL.createObjectURL(blob);
 
-      const result: VideoGenerationResult = {
+      const result: GenerationResult = {
+        type: 'video',
         url: videoUrl,
         prompt: prompt || "Image-to-Video",
         timestamp: Date.now()
       };
 
-      setGeneratedVideo(result);
+      setCurrentResult(result);
       setHistory(prev => [result, ...prev]);
       setIsGenerating(false);
     } catch (err: any) {
@@ -315,7 +396,7 @@ export default function App() {
         <div className="max-w-6xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-orange-500 rounded-lg flex items-center justify-center">
-              <Video className="w-5 h-5 text-black" />
+              <Sparkles className="w-5 h-5 text-black" />
             </div>
             <span className="text-sm font-bold tracking-widest uppercase">Veo Studio</span>
           </div>
@@ -357,15 +438,33 @@ export default function App() {
           <div>
             <h1 className="text-5xl md:text-7xl font-light tracking-tight leading-none">
               Cinematic <br />
-              <span className="italic font-serif text-orange-500">Motion</span>
+              <span className="italic font-serif text-orange-500">
+                {mode === 'video' ? 'Motion' : 'Vision'}
+              </span>
             </h1>
           </div>
           <p className="max-w-xs text-sm text-gray-400 leading-relaxed">
-            Transform your imagination into high-quality video using advanced AI generation.
+            Transform your imagination into high-quality {mode === 'video' ? 'video' : 'images'} using advanced AI.
           </p>
         </header>
 
-        {/* API Key Warning for Vercel/GitHub users */}
+        {/* Mode Selector */}
+        <div className="flex gap-4 mb-12">
+          <button 
+            onClick={() => setMode('video')}
+            className={`flex items-center gap-2 px-6 py-3 rounded-2xl font-bold transition-all ${mode === 'video' ? 'bg-orange-500 text-black' : 'bg-white/5 text-gray-400 hover:bg-white/10'}`}
+          >
+            <Video className="w-5 h-5" /> Video
+          </button>
+          <button 
+            onClick={() => setMode('image')}
+            className={`flex items-center gap-2 px-6 py-3 rounded-2xl font-bold transition-all ${mode === 'image' ? 'bg-orange-500 text-black' : 'bg-white/5 text-gray-400 hover:bg-white/10'}`}
+          >
+            <ImageIcon className="w-5 h-5" /> Image
+          </button>
+        </div>
+
+        {/* API Key Warning */}
         {!hasKey && !customApiKey && (
           <div className="mb-12 p-6 bg-orange-500/10 border border-orange-500/20 rounded-3xl flex flex-col md:flex-row items-center justify-between gap-6">
             <div className="flex items-start gap-4">
@@ -375,7 +474,7 @@ export default function App() {
               <div>
                 <h3 className="text-lg font-bold">API Key Required</h3>
                 <p className="text-sm text-gray-400">
-                  To generate videos, you need a Gemini API Key. Since you are likely using a custom deployment, please provide your own key.
+                  To generate {mode === 'video' ? 'videos' : 'images'}, you need a Gemini API Key.
                 </p>
               </div>
             </div>
@@ -394,9 +493,13 @@ export default function App() {
             <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-8 space-y-6 shadow-2xl">
               {/* Mode Toggle Info */}
               <div className="flex items-center gap-4 text-xs font-bold tracking-widest uppercase opacity-50">
-                <span className={image ? 'text-orange-500 opacity-100' : ''}>Image to Video</span>
+                <span className={image ? 'text-orange-500 opacity-100' : ''}>
+                  {mode === 'video' ? 'Image to Video' : 'Image Editing'}
+                </span>
                 <ArrowRight className="w-3 h-3" />
-                <span className={!image ? 'text-orange-500 opacity-100' : ''}>Text to Video</span>
+                <span className={!image ? 'text-orange-500 opacity-100' : ''}>
+                  {mode === 'video' ? 'Text to Video' : 'Text to Image'}
+                </span>
               </div>
 
               {/* Image Upload Area */}
@@ -409,7 +512,9 @@ export default function App() {
                     <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center group-hover:scale-110 transition-transform">
                       <Upload className="w-6 h-6 text-gray-400" />
                     </div>
-                    <span className="text-sm font-medium text-gray-400">Upload starting image (optional)</span>
+                    <span className="text-sm font-medium text-gray-400">
+                      {mode === 'video' ? 'Upload starting image (optional)' : 'Upload reference image (optional)'}
+                    </span>
                   </button>
                 ) : (
                   <div className="relative aspect-video rounded-2xl overflow-hidden border border-white/10">
@@ -439,14 +544,14 @@ export default function App() {
                 <textarea
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
-                  placeholder="Describe the motion, lighting, and scene..."
+                  placeholder={mode === 'video' ? "Describe the motion, lighting, and scene..." : "Describe the image you want to create..."}
                   className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 min-h-[120px] focus:outline-none focus:border-orange-500/50 transition-colors resize-none text-lg"
                 />
               </div>
 
               {/* Action Button */}
               <button
-                onClick={generateVideo}
+                onClick={generate}
                 disabled={isGenerating || (!prompt.trim() && !image)}
                 className="w-full py-5 bg-orange-500 disabled:bg-white/10 disabled:text-gray-500 hover:bg-orange-600 text-black font-bold rounded-2xl transition-all flex items-center justify-center gap-3 text-lg shadow-lg shadow-orange-500/20"
               >
@@ -458,7 +563,7 @@ export default function App() {
                 ) : (
                   <>
                     <Sparkles className="w-6 h-6" />
-                    <span>Create Video</span>
+                    <span>Create {mode === 'video' ? 'Video' : 'Image'}</span>
                   </>
                 )}
               </button>
@@ -505,7 +610,7 @@ export default function App() {
                     />
                   </div>
                 </motion.div>
-              ) : generatedVideo ? (
+              ) : currentResult ? (
                 <motion.div 
                   key="result"
                   initial={{ opacity: 0, y: 20 }}
@@ -513,17 +618,25 @@ export default function App() {
                   className="space-y-6"
                 >
                   <div className="aspect-video bg-black rounded-3xl overflow-hidden border border-white/10 shadow-2xl group relative">
-                    <video 
-                      src={generatedVideo.url} 
-                      controls 
-                      autoPlay 
-                      loop 
-                      className="w-full h-full object-cover"
-                    />
+                    {currentResult.type === 'video' ? (
+                      <video 
+                        src={currentResult.url} 
+                        controls 
+                        autoPlay 
+                        loop 
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <img 
+                        src={currentResult.url} 
+                        alt="Generated" 
+                        className="w-full h-full object-cover"
+                      />
+                    )}
                     <div className="absolute top-6 right-6 opacity-0 group-hover:opacity-100 transition-opacity">
                       <a 
-                        href={generatedVideo.url} 
-                        download="veo-video.mp4"
+                        href={currentResult.url} 
+                        download={currentResult.type === 'video' ? "veo-video.mp4" : "generated-image.png"}
                         className="p-3 bg-black/60 backdrop-blur-md rounded-full hover:bg-orange-500 hover:text-black transition-all flex items-center gap-2"
                       >
                         <Download className="w-5 h-5" />
@@ -533,15 +646,15 @@ export default function App() {
                   
                   <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
                     <h4 className="text-xs font-bold tracking-widest uppercase opacity-50 mb-3">Prompt Used</h4>
-                    <p className="text-lg leading-relaxed text-gray-300">{generatedVideo.prompt}</p>
+                    <p className="text-lg leading-relaxed text-gray-300">{currentResult.prompt}</p>
                   </div>
                 </motion.div>
               ) : (
                 <div className="aspect-video bg-white/5 border border-white/10 border-dashed rounded-3xl flex flex-col items-center justify-center p-12 text-center text-gray-500 space-y-4">
                   <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center">
-                    <Play className="w-10 h-10 opacity-20" />
+                    {mode === 'video' ? <Play className="w-10 h-10 opacity-20" /> : <ImageIcon className="w-10 h-10 opacity-20" />}
                   </div>
-                  <p className="text-lg">Your generated video will appear here</p>
+                  <p className="text-lg">Your generated {mode} will appear here</p>
                 </div>
               )}
             </AnimatePresence>
@@ -550,18 +663,25 @@ export default function App() {
             {history.length > 0 && (
               <div className="mt-12 space-y-6">
                 <h3 className="text-xl font-medium flex items-center gap-2">
-                  <Video className="w-5 h-5 text-orange-500" /> Recent Creations
+                  <Sparkles className="w-5 h-5 text-orange-500" /> Recent Creations
                 </h3>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                   {history.map((item, idx) => (
                     <button 
                       key={idx}
-                      onClick={() => setGeneratedVideo(item)}
+                      onClick={() => setCurrentResult(item)}
                       className="aspect-video rounded-xl overflow-hidden border border-white/10 hover:border-orange-500/50 transition-all relative group"
                     >
-                      <video src={item.url} className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity" />
+                      {item.type === 'video' ? (
+                        <video src={item.url} className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity" />
+                      ) : (
+                        <img src={item.url} className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity" />
+                      )}
                       <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent flex items-end p-3">
-                        <p className="text-[10px] truncate w-full opacity-80">{item.prompt}</p>
+                        <div className="flex items-center gap-2 w-full">
+                          {item.type === 'video' ? <Video className="w-3 h-3 shrink-0" /> : <ImageIcon className="w-3 h-3 shrink-0" />}
+                          <p className="text-[10px] truncate opacity-80">{item.prompt}</p>
+                        </div>
                       </div>
                     </button>
                   ))}
